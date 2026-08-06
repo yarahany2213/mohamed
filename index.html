@@ -50,12 +50,13 @@
     font-size:14px;
     font-weight:600;
   }
+  button:disabled{opacity:.6;cursor:not-allowed;}
   .btn-primary{
     background:var(--accent);
     color:#fff;
   }
   .btn-primary:hover{background:#3f8ce8;}
-
+ 
   .comment{
     background:var(--card);
     border:1px solid var(--border);
@@ -72,6 +73,7 @@
     margin-bottom:6px;
   }
   .comment-name{font-weight:600;color:var(--accent);}
+  .comment-date{font-size:12px;color:var(--muted);}
   .comment-text{margin:6px 0 10px 0;line-height:1.4;white-space:pre-wrap;}
   .comment-actions{
     display:flex;
@@ -92,138 +94,220 @@
   .edit-textarea{margin-top:8px;}
   .save-btn{background:#2ecc71;color:#111;}
   .cancel-btn{background:transparent;color:var(--muted);border:1px solid var(--border);}
+  .empty-state{color:var(--muted);text-align:center;padding:30px 0;}
+  .loading{color:var(--muted);text-align:center;padding:20px 0;}
 </style>
 </head>
 <body>
-
+ 
 <h2>💬 Comments</h2>
-
+ 
 <div class="form-box">
   <input type="text" id="nameInput" placeholder="Your name">
   <textarea id="commentInput" rows="3" placeholder="Write a comment..."></textarea>
-  <button class="btn-primary" onclick="addComment()">Post Comment</button>
+  <button class="btn-primary" id="postBtn" onclick="addComment()">Post Comment</button>
 </div>
-
-<div id="commentsList"></div>
-
-<script>
-let comments = [];
-let currentUser = "";
-
-function addComment(){
-  const nameInput = document.getElementById('nameInput');
-  const commentInput = document.getElementById('commentInput');
-  const name = nameInput.value.trim();
-  const text = commentInput.value.trim();
-
-  if(!name || !text){
-    alert("Please enter your name and a comment.");
-    return;
-  }
-
-  currentUser = name;
-
-  comments.push({
-    id: Date.now(),
-    name: name,
-    text: text,
-    likes: 0,
-    liked: false,
-    editing: false
+ 
+<div id="commentsList">
+  <div class="loading">Loading comments...</div>
+</div>
+ 
+<!-- Firebase SDK (v10, modular, via CDN) -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import {
+    getFirestore,
+    collection,
+    addDoc,
+    doc,
+    updateDoc,
+    deleteDoc,
+    onSnapshot,
+    query,
+    orderBy,
+    serverTimestamp,
+    increment
+  } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+ 
+  // ------- Your Firebase config -------
+  const firebaseConfig = {
+    apiKey: "AIzaSyCmSkETZ-tPmt_0UojIxQ6wmjiMHTkcbdg",
+    authDomain: "mohamed-fb97d.firebaseapp.com",
+    projectId: "mohamed-fb97d",
+    storageBucket: "mohamed-fb97d.firebasestorage.app",
+    messagingSenderId: "751451067863",
+    appId: "1:751451067863:web:24b902bd6ca36bccb2a792",
+    measurementId: "G-JZXM55BYJK"
+  };
+ 
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+  const commentsCol = collection(db, "comments");
+ 
+  // Keep a local list synced live from Firestore
+  let comments = [];
+  // Which comment ids THIS browser has liked (so the heart toggles correctly per visitor)
+  let likedIds = JSON.parse(localStorage.getItem("likedComments") || "[]");
+  // Remember the name typed last time so "Edit/Delete" show up for the same person on reload
+  let currentUser = localStorage.getItem("commentUserName") || "";
+  document.getElementById("nameInput").value = currentUser;
+ 
+  // ---- Live listener: any change in Firestore re-renders automatically ----
+  const q = query(commentsCol, orderBy("createdAt", "desc"));
+  onSnapshot(q, (snapshot) => {
+    comments = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderComments();
+  }, (error) => {
+    document.getElementById("commentsList").innerHTML =
+      `<div class="empty-state">Couldn't load comments. Check your Firestore rules/config.</div>`;
+    console.error(error);
   });
-
-  commentInput.value = "";
-  renderComments();
-}
-
-function deleteComment(id){
-  comments = comments.filter(c => c.id !== id);
-  renderComments();
-}
-
-function toggleEdit(id){
-  comments = comments.map(c =>
-    c.id === id ? {...c, editing: !c.editing} : c
-  );
-  renderComments();
-}
-
-function saveEdit(id){
-  const textarea = document.getElementById('edit-' + id);
-  const newText = textarea.value.trim();
-  if(!newText) return;
-
-  comments = comments.map(c =>
-    c.id === id ? {...c, text: newText, editing: false} : c
-  );
-  renderComments();
-}
-
-function toggleLike(id){
-  comments = comments.map(c => {
-    if(c.id === id){
-      return {
-        ...c,
-        liked: !c.liked,
-        likes: c.liked ? c.likes - 1 : c.likes + 1
-      };
+ 
+  // ---- Add a new comment ----
+  window.addComment = async function () {
+    const nameInput = document.getElementById('nameInput');
+    const commentInput = document.getElementById('commentInput');
+    const postBtn = document.getElementById('postBtn');
+    const name = nameInput.value.trim();
+    const text = commentInput.value.trim();
+ 
+    if (!name || !text) {
+      alert("Please enter your name and a comment.");
+      return;
     }
-    return c;
-  });
-  renderComments();
-}
-
-function renderComments(){
-  const list = document.getElementById('commentsList');
-  list.innerHTML = "";
-
-  comments.slice().reverse().forEach(c => {
+ 
+    currentUser = name;
+    localStorage.setItem("commentUserName", name);
+ 
+    postBtn.disabled = true;
+    try {
+      await addDoc(commentsCol, {
+        name,
+        text,
+        likes: 0,
+        createdAt: serverTimestamp()
+      });
+      commentInput.value = "";
+    } catch (e) {
+      alert("Failed to post comment.");
+      console.error(e);
+    } finally {
+      postBtn.disabled = false;
+    }
+  };
+ 
+  // ---- Delete ----
+  window.deleteComment = async function (id) {
+    try {
+      await deleteDoc(doc(db, "comments", id));
+    } catch (e) {
+      alert("Failed to delete comment.");
+      console.error(e);
+    }
+  };
+ 
+  // ---- Edit toggle (local UI state only) ----
+  const editingIds = new Set();
+  window.toggleEdit = function (id) {
+    if (editingIds.has(id)) editingIds.delete(id);
+    else editingIds.add(id);
+    renderComments();
+  };
+ 
+  // ---- Save edit ----
+  window.saveEdit = async function (id) {
+    const textarea = document.getElementById('edit-' + id);
+    const newText = textarea.value.trim();
+    if (!newText) return;
+ 
+    try {
+      await updateDoc(doc(db, "comments", id), { text: newText });
+      editingIds.delete(id);
+    } catch (e) {
+      alert("Failed to save edit.");
+      console.error(e);
+    }
+  };
+ 
+  // ---- Like / unlike ----
+  window.toggleLike = async function (id) {
+    const alreadyLiked = likedIds.includes(id);
+    try {
+      await updateDoc(doc(db, "comments", id), {
+        likes: increment(alreadyLiked ? -1 : 1)
+      });
+      if (alreadyLiked) {
+        likedIds = likedIds.filter(x => x !== id);
+      } else {
+        likedIds.push(id);
+      }
+      localStorage.setItem("likedComments", JSON.stringify(likedIds));
+      renderComments();
+    } catch (e) {
+      alert("Failed to update like.");
+      console.error(e);
+    }
+  };
+ 
+  function formatDate(ts) {
+    if (!ts || !ts.toDate) return "";
+    return ts.toDate().toLocaleString();
+  }
+ 
+  function renderComments() {
+    const list = document.getElementById('commentsList');
+ 
+    if (comments.length === 0) {
+      list.innerHTML = `<div class="empty-state">No comments yet. Be the first!</div>`;
+      return;
+    }
+ 
+    list.innerHTML = "";
+ 
+    comments.forEach(c => {
+      const div = document.createElement('div');
+      div.className = "comment";
+ 
+      const isOwner = c.name === currentUser;
+      const isEditing = editingIds.has(c.id);
+      const isLiked = likedIds.includes(c.id);
+ 
+      div.innerHTML = `
+        <div class="comment-header">
+          <span class="comment-name">${escapeHtml(c.name)}</span>
+          <span class="comment-date">${formatDate(c.createdAt)}</span>
+        </div>
+ 
+        ${isEditing ? `
+          <textarea id="edit-${c.id}" class="edit-textarea" rows="3">${escapeHtml(c.text)}</textarea>
+          <div class="comment-actions">
+            <button class="icon-btn save-btn" onclick="saveEdit('${c.id}')">Save</button>
+            <button class="icon-btn cancel-btn" onclick="toggleEdit('${c.id}')">Cancel</button>
+          </div>
+        ` : `
+          <div class="comment-text">${escapeHtml(c.text)}</div>
+          <div class="comment-actions">
+            <button class="icon-btn like-btn ${isLiked ? 'liked' : ''}" onclick="toggleLike('${c.id}')">
+              ❤ ${c.likes || 0}
+            </button>
+            ${isOwner ? `
+              <button class="icon-btn" onclick="toggleEdit('${c.id}')">Edit</button>
+              <button class="icon-btn delete-btn" onclick="deleteComment('${c.id}')">Delete</button>
+            ` : ``}
+          </div>
+        `}
+      `;
+ 
+      list.appendChild(div);
+    });
+  }
+ 
+  function escapeHtml(str) {
     const div = document.createElement('div');
-    div.className = "comment";
-
-    const isOwner = c.name === currentUser;
-
-    div.innerHTML = `
-      <div class="comment-header">
-        <span class="comment-name">${escapeHtml(c.name)}</span>
-      </div>
-
-      ${c.editing ? `
-        <textarea id="edit-${c.id}" class="edit-textarea" rows="3">${escapeHtml(c.text)}</textarea>
-        <div class="comment-actions">
-          <button class="icon-btn save-btn" onclick="saveEdit(${c.id})">Save</button>
-          <button class="icon-btn cancel-btn" onclick="toggleEdit(${c.id})">Cancel</button>
-        </div>
-      ` : `
-        <div class="comment-text">${escapeHtml(c.text)}</div>
-        <div class="comment-actions">
-          <button class="icon-btn like-btn ${c.liked ? 'liked' : ''}" onclick="toggleLike(${c.id})">
-            ❤ ${c.likes}
-          </button>
-          ${isOwner ? `
-            <button class="icon-btn" onclick="toggleEdit(${c.id})">Edit</button>
-            <button class="icon-btn delete-btn" onclick="deleteComment(${c.id})">Delete</button>
-          ` : ``}
-        </div>
-      `}
-    `;
-
-    list.appendChild(div);
-  });
-}
-
-function escapeHtml(str){
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
+    div.textContent = str;
+    return div.innerHTML;
+  }
 </script>
-
+ 
 </body>
 </html>
-<h1>Mohamed</h1>
-<section class="hero">
-    <p>Full Stack Web Developer</p>
-</section>
-<div id="mohamed"></div>
-<section id="mohamed"></section>
